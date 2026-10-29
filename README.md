@@ -1,76 +1,112 @@
 # Smart Expense Categorizer
 
-> Upload an Indian bank statement (PDF or CSV) and get every transaction extracted and categorized automatically, using OCR, computer vision and a hybrid rules + fuzzy matching + ML classifier, delivered through a Streamlit app.
+An end-to-end system that extracts transactions from Indian bank statements using OCR and computer vision, then classifies each one with a hybrid rules, fuzzy matching and machine learning pipeline. Results are presented in a multi-user Streamlit application.
 
-[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-UI-FF4B4B?style=flat&logo=streamlit&logoColor=white)](https://streamlit.io/)
-[![scikit-learn](https://img.shields.io/badge/scikit--learn-ML-F7931E?style=flat&logo=scikit-learn&logoColor=white)](https://scikit-learn.org/)
-[![OpenCV](https://img.shields.io/badge/OpenCV-Vision-5C3EE8?style=flat&logo=opencv&logoColor=white)](https://opencv.org/)
-[![Tesseract](https://img.shields.io/badge/Tesseract-OCR-blue?style=flat)](https://github.com/tesseract-ocr/tesseract)
-[![SQLite](https://img.shields.io/badge/SQLite-DB-003B57?style=flat&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?logo=streamlit&logoColor=white)
+![scikit-learn](https://img.shields.io/badge/scikit--learn-F7931E?logo=scikit-learn&logoColor=white)
+![OpenCV](https://img.shields.io/badge/OpenCV-5C3EE8?logo=opencv&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-003B57?logo=sqlite&logoColor=white)
 
-## Why this project exists
+## Overview
 
-Every Indian bank formats its statement differently: different column positions, multi-line narrations and noisy UPI strings. One hard-coded parser breaks as soon as the layout changes, and many people don't want to send financial data to a cloud LLM.
+Indian bank statements are inconsistent. Each bank uses a different layout, narrations wrap across lines, and UPI descriptions contain a lot of noise. A single hard-coded parser breaks when the format changes, and sending financial data to a cloud service is not always acceptable.
 
-This project runs locally and works in four steps:
+This project processes statements locally. It identifies the bank, extracts the transaction table with OCR, and categorizes every transaction using four cooperating engines. On the author's labelled dataset the classifier reached about 90% accuracy.
 
-1. **Identify the bank** from the statement (IFSC code, logo, keywords).
-2. **Extract the transaction table** by rendering each page to an image and OCR-ing it row by row, using per-bank column templates.
-3. **Categorize each transaction** with four cooperating engines.
-4. **Show the results** in a multi-user Streamlit app.
+## Features
 
-## How it works
+- **Bank detection:** IFSC code via OCR, OpenCV logo matching and a keyword fallback.
+- **Template-based extraction:** per-bank column templates, with an auto-generated template for unknown banks.
+- **Row-anchored OCR:** dates mark the start of each transaction, so multi-line narrations stay together.
+- **Hybrid classification:** exact rules, fuzzy matching, a calibrated ML model and an optional Google Maps lookup.
+- **Password-protected PDFs:** the app prompts for the password and unlocks the file.
+- **Multi-user interface:** Streamlit app with signup and login backed by SQLite.
+
+## Architecture
 
 ```mermaid
 flowchart LR
-    A["PDF / CSV upload"] --> B["Bank detection"]
-    B --> C["Table extraction<br/>(OCR, row by row)"]
+    A["PDF / CSV"] --> B["Bank detection"]
+    B --> C["OCR table extraction"]
     C --> D["Text cleaning"]
-    D --> E["Classification<br/>engines vote"]
-    E --> F["Streamlit table + chart"]
+    D --> E["Classification"]
+    E --> F["Streamlit table and chart"]
 ```
 
-**Bank detection** (`bank_detector.py`): reads the IFSC code from the top 35% of page 1 using OCR. If that fails it tries OpenCV logo matching, then keywords. For an unknown bank, a template is built on the fly from the column headers.
+### Bank Detection
 
-**Table extraction** (`pdf_load.py`, `bank_templates.py`): each page is rendered at 300 DPI. The date column is OCR-ed to find where each transaction starts, and the space between two dates becomes that row's box, so multi-line narrations stay together. Description and amount columns are then OCR-ed separately. Split (debit/credit), merged (Dr/Cr) and amount + type layouts are supported. Output: `Date`, `Description`, `Type`, `Amount`.
+The IFSC code is read from the top 35% of page 1 using OCR. If that fails, the system tries OpenCV logo matching and then keywords. For an unknown bank, a template is built from the table's column headers.
 
-**Classification** (`predicted.py`): descriptions are cleaned first (lowercase, digits and symbols removed, stop-words and noise like `upi` / `neft` dropped). Then four engines each give an opinion:
+### Table Extraction
 
-| Engine | How it decides | Score |
+Each page is rendered at 300 DPI. The date column is OCR-ed to find row boundaries, then the description and amount columns are OCR-ed per row. Split (debit/credit), merged (Dr/Cr) and amount-plus-type layouts are supported.
+
+### Classification
+
+Each description is cleaned, then four engines produce an opinion:
+
+| Engine | Method | Score |
 |---|---|---|
-| Exact rules | Whole-word regex on keyword lists in `category_rules.py` | 0.95 |
+| Exact rules | Whole-word regex on keyword lists | 0.95 |
 | Fuzzy match | RapidFuzz against all keywords, cutoff 85 | 0.80 |
-| ML model | TF-IDF (1-3 grams) + scaled amount → calibrated Random Forest, used if probability > 0.5 | model probability |
-| Google Maps (optional) | Looks up the merchant name and city via the Places API | 0.99 |
+| ML model | TF-IDF (1-3 grams) and scaled amount into a calibrated Random Forest, used when probability exceeds 0.5 | Model probability |
+| Google Maps (optional) | Merchant name and city lookup via Places API | 0.99 |
 
-If two or more engines agree, that category gets +0.2. The highest score wins, and anything unmatched becomes `Others`. Each row keeps its `Method` and `Confidence`, so every decision can be traced.
+A category supported by two or more engines receives a +0.2 boost, and the highest score wins. Every row keeps its `Method` and `Confidence`, so each decision can be traced. If the ML model cannot be loaded, the pipeline continues without it.
 
-The ML model was trained on an 80/20 stratified split with 3-fold cross-validation and reached about **90% accuracy** on the author's labelled set (the training CSV is not included). If `model.pkl` can't be loaded, the app skips the ML engine and continues with the others.
+**Categories:** Food & Dining, Travel & Transport, Utilities & Bills, Shopping & E-commerce, Entertainment & OTT, Health & Wellness, Financial Obligations (EMI/Loans), Insurance, Investment & Wealth, Salary & Professional Income, Taxes & Government, Housing & Education, Transfers (Personal/UPI), Others.
 
-**Categories (13 + Others):** Food & Dining, Travel & Transport, Utilities & Bills, Shopping & E-commerce, Entertainment & OTT, Health & Wellness, Financial Obligations (EMI/Loans), Insurance, Investment & Wealth, Salary & Professional Income, Taxes & Government, Housing & Education, Transfers (Personal/UPI).
+**Supported statements:** Canara (`CNRB`), Janaseva Sahakari (`JSBL`), Kotak (`KKBK`), ICICI, PhonePe history, and any other bank through the dynamic fallback. Accepted inputs are PDF (digital, scanned or password-protected) and CSV.
 
-**Supported statements:** Canara (`CNRB`), Janaseva Sahakari (`JSBL`), Kotak (`KKBK`), ICICI, PhonePe history, plus any other bank through the dynamic fallback. Inputs: PDF (digital, scanned or password-protected) and CSV.
-
-## Project structure
+## Project Structure
 
 ```text
 Smart-Expense-Categorizer/
+│
 ├── backend/
-│   ├── Databases/      # SQLite setup and user helpers
-│   ├── file_handler/   # loaders, bank detection, bank templates, logos
-│   ├── rules/          # category keyword rules
-│   └── Scripts/        # preprocess, train_model, predicted (classifier + CLI), model.pkl
+│   ├── Databases/
+│   │   ├── database_setup.py       # creates users, raw_statements, expenses tables
+│   │   └── database_manager.py     # create/verify user, save statement, update category
+│   ├── file_handler/
+│   │   ├── loader.py               # routes .pdf / .csv to the right loader
+│   │   ├── pdf_load.py             # page rendering, row anchoring, per-column OCR
+│   │   ├── csv_load.py             # CSV description-column detection
+│   │   ├── bank_detector.py        # IFSC OCR, logo matching, keyword fallback
+│   │   ├── bank_templates.py       # per-bank column templates + dynamic fallback
+│   │   ├── pdf_to_images.py        # Poppler PDF-to-image helper (diagnostics only)
+│   │   ├── diagnose_pdf.py         # inspect a PDF's tables and text
+│   │   └── logos/                  # bank logos for template matching
+│   ├── rules/
+│   │   └── category_rules.py       # keyword lists for 13 categories
+│   └── Scripts/
+│       ├── preprocess.py           # text cleaning
+│       ├── train_model.py          # trains and saves the calibrated pipeline
+│       ├── predicted.py            # hybrid classifier, process_file(), CLI batch test
+│       ├── test_bank_detector.py   # CLI check of bank detection on page 1
+│       ├── diagnose_op.py          # PDF table/text inspection helper
+│       └── model.pkl               # trained pipeline
+│
 ├── Frontend/
-│   ├── main.py         # Streamlit entry point
-│   ├── auth/           # login and signup
-│   └── pages/          # intro, dashboard (upload + analysis), graph, history
-└── assets/styles.css
+│   ├── main.py                     # Streamlit entry point, auth state, navigation
+│   ├── auth/                       # login.py, signup.py
+│   └── pages/
+│       ├── intro.py                # landing page
+│       ├── dashboard.py            # upload, password prompt, analysis, recent files
+│       ├── graph.py                # category distribution chart
+│       └── history.py              # files analysed this session
+│
+└── assets/styles.css               # dark theme
 ```
 
-## Getting started
+## Getting Started
 
-**Prerequisites:** Python 3.10+ and [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) (Windows: [UB-Mannheim build](https://github.com/UB-Mannheim/tesseract/wiki), Ubuntu: `sudo apt install tesseract-ocr`).
+### Prerequisites
+
+- Python 3.10 or higher
+- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) (Windows: [UB-Mannheim build](https://github.com/UB-Mannheim/tesseract/wiki); Ubuntu: `sudo apt install tesseract-ocr`)
+
+### Installation
 
 ```bash
 git clone https://github.com/Khudbuddin/Smart-Expense-Categorizer.git
@@ -85,39 +121,40 @@ pip install streamlit streamlit-option-menu pandas numpy scikit-learn joblib \
             nltk python-dotenv requests tabulate regex pdf2image
 ```
 
-**Configure**
-- Set your Tesseract path in `backend/file_handler/bank_detector.py` and `backend/file_handler/pdf_load.py` (`pytesseract.pytesseract.tesseract_cmd`). Both currently point to a local Windows path.
-- Optional: add `GOOGLE_API_KEY=your_key` to a `.env` file to enable the Maps engine.
+### Configuration
 
-**Run**
+- Set the Tesseract path in `backend/file_handler/bank_detector.py` and `backend/file_handler/pdf_load.py` (`pytesseract.pytesseract.tesseract_cmd`). Both currently point to a local Windows path.
+- Optional: add `GOOGLE_API_KEY=your_key` to a `.env` file to enable the Google Maps engine.
+
+### Running the Application
+
 ```bash
 python backend/Databases/database_setup.py   # creates storage.db
 streamlit run Frontend/main.py
 ```
-Open http://localhost:8501, sign up, upload a statement on the Dashboard and click **Run Full Intelligence Analysis**. The Graph page shows the category chart.
 
-**Batch mode:** put a statement in `backend/data/`, set its name at the bottom of `backend/Scripts/predicted.py`, and run `python backend/Scripts/predicted.py`.
+Open http://localhost:8501, create an account, upload a statement on the Dashboard page and run the analysis. The Graph page shows the category distribution.
 
-**Retrain the model:** add `backend/data/training_data.csv` (`Description`, `Amount`, `Category`) and run `python backend/Scripts/train_model.py`.
+### Additional Usage
 
-**Add a bank:** add an entry to `BANK_TEMPLATES` in `bank_templates.py`, keyed by the 4-letter IFSC prefix, with column pixel ranges (at 300 DPI) and an `amount_mode` (`split`, `merged` or `amount_type`).
+**Batch mode.** Place a statement in `backend/data/`, set its file name at the bottom of `backend/Scripts/predicted.py`, and run `python backend/Scripts/predicted.py`. It prints the categorized table, the method breakdown and the net balance, and saves a CSV.
 
-## Status and roadmap
+**Retraining the model.** Add `backend/data/training_data.csv` with the columns `Description`, `Amount` and `Category`, then run `python backend/Scripts/train_model.py`. Training uses an 80/20 stratified split and 3-fold cross-validation.
 
-**Working:** signup/login, PDF/CSV upload (including password-protected PDFs), bank detection, OCR extraction, 4-engine classification, category chart, CLI batch mode.
+**Adding a bank.** Add an entry to `BANK_TEMPLATES` in `bank_templates.py`, keyed by the 4-letter IFSC prefix, with column pixel ranges (at 300 DPI) and an `amount_mode` of `split`, `merged` or `amount_type`.
 
-**Planned:**
+## Roadmap
+
 - Upload, Comparison, Insights and Profile pages
 - Save categorized transactions to the `expenses` table with manual category correction
-- Salted password hashing
-- Tesseract path via environment variable
-- PNG/JPG uploads, `requirements.txt`, tests and more bank templates
+- Salted password hashing and an environment-based Tesseract path
+- PNG/JPG uploads, `requirements.txt`, automated tests and more bank templates
 
 ## Privacy
 
-Processing, OCR and classification run locally. The optional Maps step sends only the extracted merchant name and a city, never amounts or account details. Keep `storage.db`, statements and `.env` out of version control.
+Processing, OCR and classification run locally. The optional Google Maps step sends only the extracted merchant name and a city, never amounts or account details. Keep `storage.db`, bank statements and `.env` out of version control.
 
 ## Author
 
-**Khudbuddin Sayyad** · B.Sc. Data Science & AI, Mumbai
-[LinkedIn](https://linkedin.com/in/sayyad-khudbuddin) · [GitHub](https://github.com/Khudbuddin)
+Khudbuddin Sayyad, B.Sc. Data Science & AI, Mumbai
+[LinkedIn](https://linkedin.com/in/sayyad-khudbuddin) | [GitHub](https://github.com/Khudbuddin)
